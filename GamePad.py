@@ -1,4 +1,5 @@
 import serial
+from serial.tools.list_ports import comports
 from tkinter import *
 
 class GamePad:
@@ -30,12 +31,13 @@ def main(ser):
 
 
 if __name__ == "__main__":
-	try:
-		port_name = 'COM4'
-		ser = serial.Serial(port_name, 9600)
-	except:
-		port_name = input("Port name:")
-		ser = serial.Serial(port_name, 9600)
+	available_ports = comports()
+	print("Available ports:")
+	for available_port in available_ports:
+		print(available_port)
+	
+	PORT_NAME = input("Please enter a valid port name (e.g. \"COM3\"):")
+	ser = serial.Serial(PORT_NAME, 9600)
 		
 	main(ser)
 	ser.close()
