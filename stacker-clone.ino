@@ -1,158 +1,180 @@
-//Libraries for Dot Matrix
-#include <SPI.h>
-#include <DMD.h>
-#include <TimerOne.h>
+/* 
+ * stacker-clone.ino
+ * 
+ * A clone of the arcade game/merchandiser STACKER for an Arduino Nano and 32x16
+ * LED matrix display.
+ * 
+ * Written by Marc Katzef
+ */
+
 #include <stdlib.h>
 #include <stdbool.h>
 #include <math.h>
 
+//Libraries for Dot Matrix
+#include <SPI.h>
+#include <DMD.h>
+#include <TimerOne.h>
+
+// Display brightness
+#define SCAN_PERIOD_MICROS 500
+#define BRIGHTNESS_STEPS 2  // Number of screen scans per PWM period
+#define BRIGHTNESS 1        // (Brightness %) * BRIGHTNESS_STEPS
+
+// Display and game dimensions
+#define SCREEN_COLUMNS 16 // Number of LEDs in width
+#define SCREEN_ROWS 32    // Number of LEDs in height
+#define BORDER_SIZE 1     // Number of LEDs from the display edge to use as a border
+#define CELL_SIZE 2       // Width and height of each STACKER block
+#define GAME_COLUMNS 7    // Number of STACKER blocks in width (SCREEN_COLUMNS - 2 * BORDER_SIZE) / CELL_SIZE
+#define GAME_ROWS 15      // Number of STACKER blocks in height
+
+// Game properties
+#define START_WIDTH 3
+#define WIDTH_DECREASES 2 // Length of global array widthDecreaseLevels
+#define QUICK_ANIMATION_MILLIS 50
+#define STANDARD_ANIMATION_MILLIS 100
+
+// Initial and final time values used in difficulty curve
+#define INITIAL_DELAY 200     // Initial time between game steps, in milliseconds.
+#define STEADY_STATE_DELAY 45 // The smallest time between game steps, in milliseconds.
+
 DMD dmd(1, 1);
 
-#define SPEAKERPIN 4
-#define BUTTON1PIN 2
-#define BUTTON2PIN 3
-#define SCREEN_COLUMNS 16
-#define SCREEN_ROWS 32
-#define GAME_COLUMNS 7
-#define GAME_ROWS 15
-#define CELL_SIZE 2
-#define BORDER_SIZE 1
-#define BSTEPS 7
-#define DIRECTION_RIGHT 1
-#define DIRECTION_LEFT 0
-#define WIDTH_DECREASES 2
-#define START_WIDTH 3
-#define QUICK_ANIMATION 50
-#define STANDARD_ANIMATION 100
+int brightnessCount = 0; // Keeps track of brightness PWM phase
 
-#define INITIAL_DELAY 200
-#define STEADY_STATE_DELAY 45
+enum BLOCK_DIRECTIONS {DIRECTION_LEFT=0, DIRECTION_RIGHT};
 
-int brightness = 15;   //display brightness
-int bcount = 0;   //variable used to keep track of pwm phase
+unsigned short highScore = 1; // Highest level reached since start up
+byte widthDecreaseLevels[WIDTH_DECREASES] = {5, 9}; // Heights at which maximum number of blocks is reduced
 
-unsigned short highScore = 1; // Since boot
-byte width_decrease_levels[WIDTH_DECREASES] = {5, 9};//Change whenever
-
-void ScanDMD(){       //also implements a basic pwm brightness control
+/* 
+ * Scans the display, temporarily enabling each DMD pixel written HIGH. Also
+ * implements a simple PWM-based brightness control scheme. Supplies additional
+ * power to display for a number of cycles every period.
+ * Should be called very frequently, perhaps through timer interrupt.
+ */
+void scanDmd() {
   dmd.scanDisplayBySPI();
-  bcount = bcount+brightness;
-  if(bcount < BSTEPS){
-    digitalWrite(9,LOW);
+  brightnessCount++;
+  
+  if(brightnessCount < BRIGHTNESS) {
+    digitalWrite(9, HIGH);
+  } else {
+    digitalWrite(9, LOW);
   }
-  bcount = bcount % BSTEPS;
+  
+  if (brightnessCount >= BRIGHTNESS_STEPS) {
+    brightnessCount = 0;
+  }
 }
 
+
+/* 
+ * Initializes required display and communication features.
+ */
 void setup(){
-  Timer1.initialize( 500 );           //period in microseconds to call ScanDMD. Anything longer than 5000 (5ms) and you can see flicker.
-  Timer1.attachInterrupt( ScanDMD );   //attach the Timer1 interrupt to ScanDMD which goes to dmd.scanDisplayBySPI()
-  dmd.clearScreen( true );     //clear/init the DMD pixels held in RAM
-  pinMode(BUTTON1PIN,INPUT_PULLUP);
-  pinMode(BUTTON2PIN,INPUT_PULLUP);
-  pinMode(SPEAKERPIN,OUTPUT);
-  digitalWrite(SPEAKERPIN,LOW);    //speaker off
+  Timer1.initialize(SCAN_PERIOD_MICROS);
+  Timer1.attachInterrupt(scanDmd);
+  dmd.clearScreen(true);
+
   Serial.begin(9600);
-}
 
-
-void loop(){
-  dmd.clearScreen( true );
-  // clear board
-  // (re) set up game
   SetBorder(1);
-  Serial.print("started\n");
-  game();
+  Serial.println("Started");
 }
 
 
-void game(void) {
+/* 
+ * Does a bit too much at the moment...
+ */
+void loop(void) {
   // Store the height of the highest block in each column. 0 is below screen
   byte board[GAME_COLUMNS] = {0};
 
-  byte width = START_WIDTH;
-  unsigned short score = 1;
-  byte altitude = 1; // should change to 0, make board signed char or something.
-  bool dir = DIRECTION_RIGHT;
+  byte width = START_WIDTH;   // Number of blocks currently active
+  unsigned short score = 1;   // Start at level 1
+  byte altitude = 1;          // Active row of display, the result of (score - 1) % GAME_ROWS + 1
+  bool dir = DIRECTION_RIGHT; // The direction in which the blocks of the active row are moving
 
-  short leader = width - 1;
-  short follower = 0;
+  short leader = width - 1;   // Position of the block furthest in the direction that all blocks are moving
+  short follower = 0;         // Position of the block facing away from the movement direction
   for (short i = follower; i <= leader; i++) {
     SetCell(altitude, i, 1);
   }
   
   ShowHighScore(score);
-  int delayMillis = GetDelay(score);
+  int delayMillis = GetDelay(score); // Amount of time to wait between game steps
   
   while (1) {
-    while (Serial.available() > 0) {
+    while (Serial.available() > 0) { // Clear serial buffer
       Serial.read();
     }
-    delay(delayMillis); // Time for input
-    int input = Serial.read();
-    if (input != -1) {
-      if (follower > leader) {
+    delay(delayMillis);         // Keep blocks stationary, waiting for input
+    if (Serial.available()) {   // Input was received
+      if (follower > leader) {  // Swap values so leader is largest value
         short temp = follower;
         follower = leader;
         leader = temp;
       }
-      bool active = false;
-      byte fallenCols[width] = {0};
-      byte fallenNumber = 0;
+      bool active = false;          // Unknown if blocks were stopped with support
+      byte fallenCols[width] = {0}; // The columns in which blocks were stopped without support
+      byte fallenNumber = 0;        // Number of blocks stopped without support
       
       for (short i = follower; i <= leader; i++) {
-
-        if(i < 0 || i == GAME_COLUMNS) {
+        if(i < 0 || i == GAME_COLUMNS) {         // This block was off screen when stopped
           width--;
-        } else if ((board[i] == altitude - 1)) {
+        } else if ((board[i] == altitude - 1)) { // This block is supported by the previous level
           board[i]++;
           active = true;
-        } else {
-          //SetCell(altitude, i, 0);
+        } else {                                 // This block was on screen but unsupported
           width--;
           fallenCols[fallenNumber++] = i;
         }
       }
-      for (int i = 0; i < GAME_COLUMNS; i++) {
-      }
 
-      if (fallenNumber) {
+      if (fallenNumber) { // If any blocks were stopped unsupported, animate their fall
         byte fallenRows[fallenNumber];
         for (byte i = 0; i < fallenNumber; i++) {
           fallenRows[i] = altitude;
         }
         FlashBlocks(fallenRows, fallenCols, fallenNumber);
         for (byte i = 0; i < fallenNumber; i++) {
-          BlockFall(fallenCols[i], altitude, board[fallenCols[i]]+1, STANDARD_ANIMATION);
+          BlockFall(fallenCols[i], altitude, board[fallenCols[i]]+1, STANDARD_ANIMATION_MILLIS);
         }
       }
-      if (active) {
+      
+      if (active) { // If any blocks were stopped with support
         altitude++;
         score++;
         highScore = max(score, highScore);
         
         delayMillis = GetDelay(score);
         
-        if (altitude == GAME_ROWS + 1) { // Made it to next round
-          Sweep(1, 1, QUICK_ANIMATION);
-          Sweep(1, 0, QUICK_ANIMATION);
+        if (altitude == GAME_ROWS + 1) { // Made it off of current screen
+          Sweep(1, 1, QUICK_ANIMATION_MILLIS);
+          Sweep(1, 0, QUICK_ANIMATION_MILLIS);
           
-          altitude = 1; //Reset
+          altitude = 1; // Reset position on board
           for (byte i = 0; i < GAME_COLUMNS; i++) {
             board[i] = 0;
           }
           
-          dmd.clearScreen( true );
+          dmd.clearScreen(true);
           SetBorder(1);
-          ShowHighScore(score); // Score used to get bearings.
-          // Used to "break" here
+          ShowHighScore(score); // Score is used to get bearings
         }
+
+        // Find what width the next level of active blocks must be
         byte maxWidth = START_WIDTH;
         for (byte i = 0; i < WIDTH_DECREASES; i++) {
-          if (altitude >= width_decrease_levels[i]) {
+          if (altitude >= widthDecreaseLevels[i]) {
             maxWidth--;
           }
         }
         width = min(width, maxWidth);
+
+        // Set initial position and movement direction of the next level's blocks
         if (altitude % 2 != 0) { // Left start
           leader = width - 1;
           follower = 0;
@@ -169,20 +191,23 @@ void game(void) {
           }
         }
 
-        continue;
-      } else {
+        continue; // Restart loop (waiting for input)
+        
+      } else { // Game over, perform animation
         for (byte col = 0; col < GAME_COLUMNS; col++) {
           if (board[col] > 0) {
-            BlockFall(col, board[col], 1, QUICK_ANIMATION);
+            BlockFall(col, board[col], 1, QUICK_ANIMATION_MILLIS);
           }
         }
-        Sweep(0, 1, QUICK_ANIMATION);
-        Sweep(0, 0, QUICK_ANIMATION);
+        Sweep(0, 1, QUICK_ANIMATION_MILLIS);
+        Sweep(0, 0, QUICK_ANIMATION_MILLIS);
         break;
       }
     }
+
+    // Regardless of whether input was received:
     
-    if (leader == GAME_COLUMNS) {
+    if (leader == GAME_COLUMNS) { // Reached right end, change direction, return active blocks to normal width
       leader = GAME_COLUMNS - width;
       follower = GAME_COLUMNS - 1;
       dir = DIRECTION_LEFT;
@@ -190,20 +215,22 @@ void game(void) {
       leader = width - 1;
       follower = 0;
       dir = DIRECTION_RIGHT;
-    } else {
+    } else { // Move leader and follower in current direction (allows movement one cell off of display)
       SetCell(altitude, follower, 0);
       switch (dir) {
         case DIRECTION_RIGHT:
-        follower++;
-        leader++;
-        break;
+          follower++;
+          leader++;
+          break;
         case DIRECTION_LEFT:
-        follower--;
-        leader--;
-        break;
+          follower--;
+          leader--;
+          break;
       }
     }
-    if (width == 1) {
+    
+    // Undo movement off of display if only one block is active
+    if (width == 1) { 
       if (leader == GAME_COLUMNS) {
         leader = follower = GAME_COLUMNS - 2;
         dir = DIRECTION_LEFT;
@@ -212,6 +239,8 @@ void game(void) {
         dir = DIRECTION_RIGHT;
       }
     }
+
+    // Enable latest leader block LEDs
     if (leader >= 0 && leader < GAME_COLUMNS) {
       SetCell(altitude, leader, 1);
     }
@@ -266,13 +295,7 @@ void BlockFall(byte col, char startAltitude, char endAltitude, int delayMillis) 
     change =  1;
     difference = endAltitude - startAltitude;
   }
-  Serial.print((int)startAltitude);
-  Serial.print(", ");
-  Serial.print((int)endAltitude);
-  Serial.print(", ");
-  Serial.print((int)change);
-  Serial.print("\n");
-  Serial.flush();
+
   byte altitude = startAltitude;
   
   for (byte i = 0; i < difference; i++) {
@@ -285,43 +308,7 @@ void BlockFall(byte col, char startAltitude, char endAltitude, int delayMillis) 
   
   SetCell(endAltitude, col, 0);
 }
-/*
-// Turns off cols, end altitude after carrying this thing out.
-void BlockFall(byte* cols, byte n, char startAltitude, char* endAltitudes) {
-  int delayMillis = 150;
-  bool change;
-  byte difference;
-  char theEnd;
-  if (startAltitude > endAltitudes[0]) {
-    change = -1;
-    theEnd = 0;
-    difference = startAltitude - theEnd;
-  } else {
-    change =  1;
-    theEnd = GAME_ROWS + 1;
-    difference = theEnd - startAltitude;
-  }
 
-  byte altitude = startAltitude;
-  
-  for (byte i = 0; i < difference; i++) {
-    for (byte entry = 0; entry < n; entry++) {
-      if ((change == 1 && altitude <= endAltitudes[entry]) ||
-        (change == -1 && altitude >= endAltitudes[entry])) {
-        
-        SetCell(altitude, cols[entry], 0);
-        altitude += change;
-        SetCell(altitude, cols[entry], 1);
-      }
-    }
-    delay(delayMillis);
-  }
-  
-  //for (byte entry = 0; entry < n; entry++) {
-  //  SetCell(endAltitude, cols[entry], 0);
-  //}
-}
-*/
 
 void SetCell(short givenRow, short givenCol, int value) {  
   int startRow = (givenRow - 1) * CELL_SIZE + BORDER_SIZE;
@@ -370,5 +357,4 @@ int GetDelay(unsigned short score) {
   double result = 2.0 * (INITIAL_DELAY - STEADY_STATE_DELAY) / PI * atan(-2.5 * score / GAME_ROWS) + INITIAL_DELAY;
   return (int) result;
 }
-
 
