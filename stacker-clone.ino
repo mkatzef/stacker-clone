@@ -34,6 +34,7 @@
 #define WIDTH_DECREASES 2 // Length of global array widthDecreaseLevels
 #define QUICK_ANIMATION_MILLIS 50
 #define STANDARD_ANIMATION_MILLIS 100
+#define STANDARD_ANIMATION_MILLIS 250
 
 // Initial and final time values used in difficulty curve
 #define INITIAL_DELAY 200     // Initial time between game steps, in milliseconds.
@@ -71,7 +72,8 @@ void scanDmd() {
 
 
 /* 
- * Initializes required display and communication features.
+ * Initializes required display and communication features. Also draws the game
+ * border with a high score of 1.
  */
 void setup(){
   Timer1.initialize(SCAN_PERIOD_MICROS);
@@ -86,7 +88,16 @@ void setup(){
 
 
 /* 
- * Does a bit too much at the moment...
+ * Contains all game logic, should be broken into a set of smaller functions.
+ * Current tasks:
+ * * Initialize game variables
+ * * Enter infinite game loop (only external variable affected is highScore)
+ * * Exit loop at the end of the game
+ * 
+ * The game loop involves the following tasks:
+ * * Look for input since last movement
+ * * If input was received, update game variables (possibly ending game)
+ * * Enable and disable required blocks to show movement
  */
 void loop(void) {
   // Store the height of the highest block in each column. 0 is below screen
@@ -100,7 +111,7 @@ void loop(void) {
   short leader = width - 1;   // Position of the block furthest in the direction that all blocks are moving
   short follower = 0;         // Position of the block facing away from the movement direction
   for (short i = follower; i <= leader; i++) {
-    SetCell(altitude, i, 1);
+    SetGameCell(altitude, i, 1);
   }
   
   ShowHighScore(score);
@@ -110,13 +121,16 @@ void loop(void) {
     while (Serial.available() > 0) { // Clear serial buffer
       Serial.read();
     }
-    delay(delayMillis);         // Keep blocks stationary, waiting for input
-    if (Serial.available()) {   // Input was received
-      if (follower > leader) {  // Swap values so leader is largest value
+    
+    delay(delayMillis); // Keep blocks stationary, waiting for input
+    
+    if (Serial.available()) {  // Input was received
+      if (follower > leader) { // Swap values so leader is largest value
         short temp = follower;
         follower = leader;
         leader = temp;
       }
+      
       bool active = false;          // Unknown if blocks were stopped with support
       byte fallenCols[width] = {0}; // The columns in which blocks were stopped without support
       byte fallenNumber = 0;        // Number of blocks stopped without support
@@ -138,9 +152,9 @@ void loop(void) {
         for (byte i = 0; i < fallenNumber; i++) {
           fallenRows[i] = altitude;
         }
-        FlashBlocks(fallenRows, fallenCols, fallenNumber);
+        FlashBlocks(fallenRows, fallenCols, fallenNumber, 2, STANDARD_ANIMATION_MILLIS);
         for (byte i = 0; i < fallenNumber; i++) {
-          BlockFall(fallenCols[i], altitude, board[fallenCols[i]]+1, STANDARD_ANIMATION_MILLIS);
+          BlockFall(fallenCols[i], altitude, board[fallenCols[i]] + 1, STANDARD_ANIMATION_MILLIS);
         }
       }
       
@@ -180,18 +194,18 @@ void loop(void) {
           follower = 0;
           dir = DIRECTION_RIGHT;
           for (short i = follower; i <= leader; i++) {
-            SetCell(altitude, i, 1);
+            SetGameCell(altitude, i, 1);
           }
         } else {
           leader = GAME_COLUMNS - width;
           follower = GAME_COLUMNS - 1;
           dir = DIRECTION_LEFT;
           for (short i = leader; i <= follower; i++) {
-            SetCell(altitude, i, 1);
+            SetGameCell(altitude, i, 1);
           }
         }
 
-        continue; // Restart loop (waiting for input)
+        continue; // Restart loop (draw new blocks and wait for input)
         
       } else { // Game over, perform animation
         for (byte col = 0; col < GAME_COLUMNS; col++) {
@@ -216,7 +230,7 @@ void loop(void) {
       follower = 0;
       dir = DIRECTION_RIGHT;
     } else { // Move leader and follower in current direction (allows movement one cell off of display)
-      SetCell(altitude, follower, 0);
+      SetGameCell(altitude, follower, 0);
       switch (dir) {
         case DIRECTION_RIGHT:
           follower++;
@@ -242,12 +256,19 @@ void loop(void) {
 
     // Enable latest leader block LEDs
     if (leader >= 0 && leader < GAME_COLUMNS) {
-      SetCell(altitude, leader, 1);
+      SetGameCell(altitude, leader, 1);
     }
   }
 }
 
 
+/* 
+ * Sets all game cells to the given val (enabled or disabled) in a direction
+ * determined by dir. A pause of delayMillis is taken between each row being set.
+ * Dir is interpreted according to the following scheme:
+ * * True - set rows from bottom to top
+ * * False - set rows from top to bottom
+ */
 void Sweep(bool dir, bool val, int delayMillis) {
   byte startAltitude;
   char change;
@@ -256,7 +277,7 @@ void Sweep(bool dir, bool val, int delayMillis) {
     startAltitude = 0;
     change = 1;
   } else {
-    startAltitude = GAME_ROWS+1;
+    startAltitude = GAME_ROWS + 1;
     change = -1;
   }
 
@@ -264,19 +285,27 @@ void Sweep(bool dir, bool val, int delayMillis) {
   for (byte row = 0; row < GAME_ROWS; row++) {
     altitude += change;
     for (byte col = 0; col < GAME_COLUMNS; col++) {
-      SetCell(altitude, col, val);
+      SetGameCell(altitude, col, val);
     }
     delay(delayMillis);
   }
 }
 
-void FlashBlocks(byte* rows, byte* cols, byte n) {
+
+/* 
+ * Enables and disables the set of blocks defined by the given arrays at the given
+ * frequency. Expects the following variables:
+ * * rows - an array of the rows of the blocks to flash
+ * * cols - an array of the columns of the blocks to flash
+ * * blockCount - the number of blocks defined by the rows and cols arrays
+ * * reps - the number of times the blocks must be flashed
+ * * delayMillis - the amount of time for which the blocks are disabled or enabled
+ */
+void FlashBlocks(byte* rows, byte* cols, byte blockCount, byte reps, int delayMillis) {
   bool val = 0;
-  byte reps = 2;
-  int delayMillis = 250;
   for (byte i = 0; i < 2 * reps; i++) {
-    for (byte block = 0; block < n; block++) {
-      SetCell(rows[block], cols[block], val);
+    for (byte block = 0; block < blockCount; block++) {
+      SetGameCell(rows[block], cols[block], val);
     }
     val = !val;
     delay(delayMillis);
@@ -284,7 +313,14 @@ void FlashBlocks(byte* rows, byte* cols, byte n) {
 }
 
 
-// Turns off cols, end altitude after carrying this thing out.
+/* 
+ * Animates the movement of a block in the given column, from startAltitude to
+ * endAltitude. The block is shown in each position between the two indices
+ * (inclusive) for delayMillis milliseconds. Given column and altitudes should be
+ * indices in [0, GAME_COLUMNS) and [1, GAME_ROWS] respectively.
+ * Note: eventually disables all cells from startAltitude up to (and including)
+ * endAltitude.
+ */
 void BlockFall(byte col, char startAltitude, char endAltitude, int delayMillis) {
   char change;
   byte difference;
@@ -299,18 +335,23 @@ void BlockFall(byte col, char startAltitude, char endAltitude, int delayMillis) 
   byte altitude = startAltitude;
   
   for (byte i = 0; i < difference; i++) {
-    SetCell(altitude, col, 0);
+    SetGameCell(altitude, col, 0);
     altitude += change;
-    SetCell(altitude, col, 1);
+    SetGameCell(altitude, col, 1);
     
     delay(delayMillis);
   }
   
-  SetCell(endAltitude, col, 0);
+  SetGameCell(endAltitude, col, 0);
 }
 
 
-void SetCell(short givenRow, short givenCol, int value) {  
+/* 
+ * Sets the CELL_SIZE x CELL_SIZE LEDs of a cell to the given value (on or
+ * off). Given row and column should be indices in [0, GAME_ROWS) and
+ * [0, GAME_COLUMNS) respectively for full cell to be written.
+ */
+void SetCell(short givenRow, short givenCol, bool value) {  
   int startRow = (givenRow - 1) * CELL_SIZE + BORDER_SIZE;
   int startCol = givenCol * CELL_SIZE + BORDER_SIZE;
   
@@ -322,6 +363,20 @@ void SetCell(short givenRow, short givenCol, int value) {
 }
 
 
+/* 
+ * Calls SetCell with the shift between altitude and game rows. Given altitude and
+ * column should be indices in [1, GAME_ROWS] and [0, GAME_COLUMNS) respectively
+ * for full cell to be written.
+ */
+void SetGameCell(short altitude, short givenCol, bool value) {  
+  SetGameCell(altitude - 1, givenCol, value);
+}
+
+
+/* 
+ * Writes the given value to each of the outer BORDER_SIZE pixels of the LED matrix
+ * display.
+ */
 void SetBorder(bool value) {
   for (byte col = 0; col < SCREEN_COLUMNS; col++) {
      for (byte row = 0; row < BORDER_SIZE; row++) {
@@ -339,8 +394,14 @@ void SetBorder(bool value) {
 }
 
 
+/* 
+ * Adds a visualization of the current highScore to the display where applicable.
+ * This visualization involves just disabling the border LEDs at the highScore
+ * altitude. Uses the given score to identify if the current screen encompasses the
+ * high score.
+ */
 void ShowHighScore(unsigned short score) { 
-  unsigned short lowest = (score / (GAME_ROWS+1)) * GAME_ROWS + 1;
+  unsigned short lowest = (score / (GAME_ROWS + 1)) * GAME_ROWS + 1;
   unsigned short highest = lowest + GAME_ROWS - 1;
 
   if (highScore >= lowest && highScore <= highest) {
@@ -348,13 +409,24 @@ void ShowHighScore(unsigned short score) {
     if (row <  1) {
      return;
     }
-    SetCell(row, -1, 0);
-    SetCell(row, GAME_COLUMNS, 0);
+    SetGameCell(row, -1, 0);
+    SetGameCell(row, GAME_COLUMNS, 0);
   }
 }
 
+
+/* ********************************************************************************
+ * Generates a delay time (in milliseconds) to use between game steps. This delay
+ * decreases as the given score increases, to increase difficulty.
+ * 
+ * The current difficulty curve is based on arctan(-x) scaled to provide the
+ * following:
+ * * INITIAL_DELAY for a score of 0 (impossible)
+ * * A quick decrease as score increases
+ * * FINAL_DELAY as score tends to infinity
+ */
 int GetDelay(unsigned short score) {
   double result = 2.0 * (INITIAL_DELAY - STEADY_STATE_DELAY) / PI * atan(-2.5 * score / GAME_ROWS) + INITIAL_DELAY;
-  return (int) result;
+  return result;
 }
 
