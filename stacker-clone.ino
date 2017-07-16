@@ -352,7 +352,7 @@ void BlockFall(byte col, char startAltitude, char endAltitude, int delayMillis) 
  * [0, GAME_COLUMNS) respectively for full cell to be written.
  */
 void SetCell(short givenRow, short givenCol, bool value) {  
-  int startRow = (givenRow - 1) * CELL_SIZE + BORDER_SIZE;
+  int startRow = givenRow * CELL_SIZE + BORDER_SIZE;
   int startCol = givenCol * CELL_SIZE + BORDER_SIZE;
   
   for (byte row = 0; row < CELL_SIZE; row++) {
@@ -369,7 +369,7 @@ void SetCell(short givenRow, short givenCol, bool value) {
  * for full cell to be written.
  */
 void SetGameCell(short altitude, short givenCol, bool value) {  
-  SetGameCell(altitude - 1, givenCol, value);
+  SetCell(altitude - 1, givenCol, value);
 }
 
 
